@@ -220,43 +220,6 @@ protected:
 	FOURCC fccHandler;
 };
 
-#ifdef HAVE_LIBQUICKTIME
-#include <quicktime.h>
-
-class QtHandler: public FileHandler
-{
-public:
-	QtHandler();
-	~QtHandler();
-
-	bool FileIsOpen();
-	bool Create( const string& filename );
-	int Write( Frame *frame );
-	int Close();
-	off_t GetFileSize();
-	int GetTotalFrames();
-	bool Open( const char *s );
-	int GetFrame( Frame *frame, int frameNum );
-
-private:
-	quicktime_t *fd;
-	long samplingRate;
-	int samplesPerBuffer;
-	int channels;
-
-	bool isFullyInitialized;
-
-	unsigned int audioBufferSize;
-	int16_t *audioBuffer;
-	short int** audioChannelBuffer;
-	short int* audioChannelBuffers[ 4 ];
-
-	void Init();
-	inline void DeinterlaceStereo16( void* pInput, int iBytes, void* pLOutput, void* pROutput );
-
-};
-#endif
-
 
 #if defined(HAVE_LIBJPEG) && defined(HAVE_LIBDV)
 extern "C"
@@ -280,6 +243,7 @@ private:
 	string file;
 	string temp;
 	bool usetemp;
+  int  save_tmp_code;
 
 	int fixAspect( Frame *frame );
 	bool scale( Frame *frame );
@@ -287,7 +251,7 @@ private:
 public:
 	JPEGHandler( int quality, bool deinterlace = false, int width = -1, int height = -1, bool overwrite = false, string temp = "tmp.jpg", bool usetemp = false );
 	~JPEGHandler();
-
+  
 	bool FileIsOpen()
 	{
 		return isOpen;

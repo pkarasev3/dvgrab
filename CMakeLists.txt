@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 2.8)
 project(dvgrab)
 # search for Boost version 1.34
-find_package( Boost COMPONENTS filesystem program_options )
+find_package( Boost COMPONENTS filesystem program_options thread)
+find_package( OpenCV REQUIRED )
 
 link_directories ( ${Boost_LIBRARY_DIRS} )
 include_directories ( ${Boost_INCLUDE_DIRS} )
@@ -42,7 +43,8 @@ macro(define_module name)
 
 endmacro()
 
-set(EXTERNAL_LIBS ${EXTERNAL_LIBS}   raw1394 avc1394  rom1394 iec61883 jpeg dv)
+set(EXTERNAL_LIBS ${EXTERNAL_LIBS}   raw1394 avc1394  rom1394 iec61883 jpeg dv
+                                     ${OpenCV_LIBS}  ${Boost_LIBRARIES})
 
 
 define_module(dvgrab)

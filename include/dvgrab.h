@@ -33,11 +33,13 @@
 #include "dvframe.h"
 #include "hdvframe.h"
 #include "smiltime.h"
-
 #include <stdint.h>
 
-#define DEFAULT_FORMAT (RAW_FORMAT)
-#define DEFAULT_FORMAT_STR "raw"
+#include "opencv2/core/core.hpp"
+#include "opencv2/highgui/highgui.hpp"
+
+#define DEFAULT_FORMAT (JPEG_FORMAT)
+#define DEFAULT_FORMAT_STR "jpeg"
 #define DEFAULT_FRAMES 0
 #define DEFAULT_LOCKSTEP_MAXDROPS -1
 #define DEFAULT_LOCKSTEP_TOTALDROPS -1
@@ -46,14 +48,23 @@
 #define DEFAULT_CMINCUTSIZE 0
 #define DEFAULT_EVERY 1
 #define DEFAULT_CHANNEL 63
-#define DEFAULT_BUFFERS 100
+#define DEFAULT_BUFFERS 20
 #define DEFAULT_V4L2_DEVICE "/dev/video"
 
 extern int g_debug;
 
 class DVgrab
 {
+  
+public:
+  static bool m_send_tcp_packet_frame;
+  static std::string m_tcp_host;
+  static std::string m_tcp_port;
+  
 private:
+  
+  cv::Mat  last_frame;
+  
 	/// the interface card to use (typically == 0)
 	int	m_port;
 	int m_node;
@@ -134,6 +145,13 @@ private:
 public:
 	DVgrab( int argc, char *argv[] );
 	~DVgrab();
+  
+  void GetLastFrame( cv::Mat& out ) {
+    if( ! last_frame.empty() )
+      last_frame.copyTo(out);
+    else
+      std::cerr << "warning, empty frame requested!" << std::endl;
+  }
 
 	void getargs( int argc, char *argv[] );
 	void startCapture();

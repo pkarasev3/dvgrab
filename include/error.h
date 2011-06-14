@@ -27,6 +27,10 @@ extern "C"
 {
 #endif
 
+#ifndef __ASSERT_FUNCTION
+  #define __ASSERT_FUNCTION  
+#endif
+  
 #define fail_neg(eval)  real_fail_neg  (eval, #eval, __ASSERT_FUNCTION, __FILE__, __LINE__)
 #define fail_null(eval) real_fail_null (eval, #eval, __ASSERT_FUNCTION, __FILE__, __LINE__)
 #define fail_if(eval)   real_fail_if   (eval, #eval, __ASSERT_FUNCTION, __FILE__, __LINE__)

@@ -52,6 +52,20 @@ using std::endl;
 #include "v4l2reader.h"
 #include "srt.h"
 
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <boost/asio.hpp>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <boost/algorithm/string.hpp>
+#include <boost/lexical_cast.hpp>
+#include <boost/program_options.hpp>
+
+using boost::lexical_cast;
+using boost::asio::ip::tcp;
+
+
 extern bool g_done;
 pthread_mutex_t DVgrab::capture_mutex;
 pthread_t DVgrab::capture_thread;
@@ -60,6 +74,9 @@ Frame *DVgrab::m_frame;
 FileHandler *DVgrab::m_writer;
 static SubtitleWriter subWriter;
 
+bool   DVgrab::m_send_tcp_packet_frame = false;
+string DVgrab::m_tcp_host              = "localhost";
+string DVgrab::m_tcp_port              = "5001";
 
 DVgrab::DVgrab( int argc, char *argv[] ) :
 		m_program_name( argv[0] ), m_port( -1 ), m_node( -1 ), m_reader_active( false ), m_autosplit( false ),
@@ -67,14 +84,14 @@ DVgrab::DVgrab( int argc, char *argv[] ) :
 		m_max_file_size( DEFAULT_SIZE ), m_collection_size( DEFAULT_CSIZE ),
 		m_collection_min_cut_file_size( DEFAULT_CMINCUTSIZE ), m_sizesplitmode ( 0 ),
 		m_file_format( DEFAULT_FORMAT ), m_open_dml( false ), m_frame_every( DEFAULT_EVERY ),
-		m_jpeg_quality( 75 ), m_jpeg_deinterlace( false ), m_jpeg_width( -1 ), m_jpeg_height( -1 ),
-		m_jpeg_overwrite( false ), m_jpeg_temp( "dvtmp.jpg" ), m_jpeg_usetemp( false ),
+		m_jpeg_quality( 85 ), m_jpeg_deinterlace( false ), m_jpeg_width( 640 ), m_jpeg_height( 480 ),
+		m_jpeg_overwrite( false ), m_jpeg_temp( "/tmp/dvtmp" ), m_jpeg_usetemp( true ),
 		m_dropped_frames( 0 ), m_bad_frames(0), m_interactive( false ), m_buffers( DEFAULT_BUFFERS ), m_total_frames( 0 ),
 		m_duration( "" ), m_timeDuration( 0 ), m_noavc( false ),
 		m_guid( 0 ), m_timesys( false ), m_connection( 0 ), m_raw_pipe( false ),
 		m_no_stop( false ), m_timecode( false ), m_lockstep( false ), m_lockPending( false ),
 		m_lockstep_maxdrops( DEFAULT_LOCKSTEP_MAXDROPS ), m_lockstep_totaldrops( DEFAULT_LOCKSTEP_TOTALDROPS ),
-		m_captureActive( false ), m_avc( 0 ), m_reader( 0 ), m_hdv( false ), m_showstatus( false ),
+		m_captureActive( false ), m_avc( 0 ), m_reader( 0 ), m_hdv( false ), m_showstatus( true ),
 		m_isLastTimeCodeSet( false ), m_isLastRecDateSet( false ), m_v4l2( false ), m_jvc_p25( false ),
 		m_24p( false ), m_24pa( false ), m_isRecordMode( false ), m_isRewindFirst( false ),
 		m_timeSplit(0), m_srt( false ), m_isNewFile(false)
@@ -83,9 +100,9 @@ DVgrab::DVgrab( int argc, char *argv[] ) :
 	m_writer = 0;
 	m_input_file_name = NULL;
 	m_dst_file_name = NULL;
-
+  
 	getargs( argc, argv );
-
+  
 	if ( m_v4l2 )
 	{
 		if ( !m_input_file_name )
@@ -96,22 +113,22 @@ DVgrab::DVgrab( int argc, char *argv[] ) :
 		// if reading stdin, make sure its not a tty!
 		if ( m_input_file_name && ( strcmp( m_input_file_name, "-" ) == 0 ) && ( isatty( fileno( stdin ) ) || m_interactive ) )
 			throw std::string( "Can't read from tty or in interactive mode" );
-	
+    
 		if ( ! m_input_file_name && ( ! m_noavc || m_port == -1 ) )
 			m_node = discoverAVC( &m_port, &m_guid );
-	
+    
 		if ( ( m_interactive || ! m_input_file_name ) && ( ! m_noavc && m_node == -1 ) )
 			throw std::string( "no camera exists" );
-	
+    
 		if ( m_file_format == MPEG2TS_FORMAT )
 			m_hdv = true;
 	}
-
+  
 	pthread_mutex_init( &capture_mutex, NULL );
 	if ( m_port != -1 )
 	{
 		iec61883Connection::CheckConsistency( m_port, m_node );
-
+    
 		if ( ! m_noavc )
 		{
 			m_avc = new AVC( m_port );
@@ -135,7 +152,7 @@ DVgrab::DVgrab( int argc, char *argv[] ) :
 			sendEvent( "Established connection over channel %d", m_channel );
 		}
 		m_reader = new iec61883Reader( m_port, m_channel, m_buffers, 
-			this->testCaptureProxy, this, m_hdv );
+                                   this->testCaptureProxy, this, m_hdv );
 	}
 	else if ( m_v4l2 )
 	{
@@ -149,7 +166,7 @@ DVgrab::DVgrab( int argc, char *argv[] ) :
 	}
 	else
 		throw std::string( "invalid source specified" );
-
+  
 	if ( m_reader )
 	{
 		pthread_create( &capture_thread, NULL, captureThread, this );
@@ -288,7 +305,7 @@ void DVgrab::set_format_from_name( void )
 	if ( filename.find( '.' ) != string::npos )
 	{
 		std::string ext = StringUtils::toUpper( filename.substr( filename.find_last_of( '.' ) + 1 ) );
-
+    
 		if ( ext == "AVI" )
 			m_file_format = AVI_DV2_FORMAT;
 		else if ( ext == "DV" )
@@ -366,9 +383,9 @@ void DVgrab::getargs( int argc, char *argv[] )
 		{ "24pa", no_argument, &m_24pa, true },
 #endif
 		{ "version", no_argument, 0, 'v' },
-		{ 0, 0, 0, 0 }
+{ 0, 0, 0, 0 }
 	};
-
+  
 	while ( -1 != ( c = getopt_long_only( argc, argv, opts, long_opts, &optindex ) ) )
 	{
 		switch ( c )
@@ -481,7 +498,7 @@ void DVgrab::getargs( int argc, char *argv[] )
 			exit( EXIT_FAILURE );
 		}
 	}
-
+  
 	if ( optind < argc )
 	{
 		if ( argv[ optind ][0] == '-' )
@@ -509,7 +526,7 @@ void DVgrab::getargs( int argc, char *argv[] )
 			exit( EXIT_FAILURE );
 		}
 	}
-
+  
 	if ( m_dst_file_name == NULL && !m_raw_pipe )
 		m_dst_file_name = strdup( "dvgrab-" );
 }
@@ -524,18 +541,18 @@ void DVgrab::startCapture()
 		case RAW_FORMAT:
 			m_writer = new RawHandler();
 			break;
-
+      
 		case DIF_FORMAT:
 			m_writer = new RawHandler( ".dif" );
 			break;
-
+      
 		case AVI_DV1_FORMAT:
 			{
 				AVIHandler *aviWriter = new AVIHandler( AVI_DV1_FORMAT );
 				m_writer = aviWriter;
 				break;
 			}
-
+      
 		case AVI_DV2_FORMAT:
 			{
 				AVIHandler *aviWriter = new AVIHandler( AVI_DV2_FORMAT );
@@ -548,7 +565,7 @@ void DVgrab::startCapture()
 				aviWriter->SetOpenDML( m_open_dml );
 				break;
 			}
-
+      
 #ifdef HAVE_LIBQUICKTIME
 		case QT_FORMAT:
 			m_writer = new QtHandler();
@@ -556,17 +573,17 @@ void DVgrab::startCapture()
 			m_writer->SetRemove2332( m_24pa );
 			break;
 #endif
-
+      
 #if defined(HAVE_LIBJPEG) && defined(HAVE_LIBDV)
 		case JPEG_FORMAT:
 			m_writer = new JPEGHandler( m_jpeg_quality, m_jpeg_deinterlace, m_jpeg_width, m_jpeg_height, m_jpeg_overwrite, m_jpeg_temp, m_jpeg_usetemp );
 			break;
 #endif
-
+      
 		case MPEG2TS_FORMAT:
 			m_writer = new Mpeg2Handler( m_jvc_p25 ? MPEG2_JVC_P25 : 0 );
 			break;
-
+      
 		}
 		m_writer->SetTimeStamp( m_timestamp );
 		m_writer->SetTimeSys( m_timesys );
@@ -584,23 +601,23 @@ void DVgrab::startCapture()
 		m_writer->SetMaxColSize( ( off_t ) ( m_collection_size ) * ( off_t ) ( 1024 * 1024 ) );
 		m_writer->SetMinColSize( ( off_t ) ( m_collection_size - m_collection_min_cut_file_size ) * ( off_t ) ( 1024 * 1024 ) );
 	}
-
+  
 	if ( m_avc )
 	{
 		if ( m_isRewindFirst && !m_interactive )
 		{
 			// Stop whatever is happening
 			m_avc->Stop( m_node );
-
+      
 			// Wait until it is stopped
 			while ( !g_done &&
-				AVC1394_MASK_RESPONSE_OPERAND( m_avc->TransportStatus( m_node ), 3 )
-				!= AVC1394_VCR_OPERAND_WIND_STOP )
+              AVC1394_MASK_RESPONSE_OPERAND( m_avc->TransportStatus( m_node ), 3 )
+              != AVC1394_VCR_OPERAND_WIND_STOP )
 			{
 				timespec t = {0, 125000000L};
 				nanosleep( &t, NULL );
 			}
-
+      
 			// Rewind
 			if ( !g_done )
 			{
@@ -608,42 +625,42 @@ void DVgrab::startCapture()
 				timespec t = {0, 125000000L};
 				nanosleep( &t, NULL );
 			}
-
+      
 			// Wait until is done rewinding
 			while ( !g_done &&
 			        AVC1394_MASK_RESPONSE_OPERAND( m_avc->TransportStatus( m_node ), 3 )
-			            != AVC1394_VCR_OPERAND_WIND_STOP )
+              != AVC1394_VCR_OPERAND_WIND_STOP )
 			{
 				timespec t = {0, 125000000L};
 				nanosleep( &t, NULL );
 			}
 		}
-
+    
 		// Now Play so we can capture something
 		if ( !g_done )
 			m_avc->Play( m_node );
 	}
-
+  
 	sendEvent( "Waiting for %s...", m_hdv ? "HDV" : "DV" );
-
+  
 	// this is a little unclean, checking global g_done from main.cc to allow interruption
 	while ( !g_done && m_frame == NULL )
 	{
 		timespec t = {0, 25000000L};
 		nanosleep( &t, NULL );
 	}
-
+  
 	if ( !g_done && m_frame )
 	{
 		// OK, we have data, commence capture
 		sendEvent( "Capture Started" );
 		m_captureActive = true;
 		m_total_frames = 0;
-
+    
 		// parse the SMIL time value duration
 		if ( m_timeDuration == NULL && ! m_duration.empty() )
 			m_timeDuration = new SMIL::MediaClippingTime( m_duration, m_frame->GetFrameRate() );
-
+    
 		if ( m_dst_file_name )
 			pthread_mutex_unlock( &capture_mutex );
 	}
@@ -668,7 +685,7 @@ void DVgrab::stopCapture()
 		std::string filename = m_writer->GetFileName();
 		int frames = m_writer->GetFramesWritten();
 		float size = ( float ) m_writer->GetFileSize() / 1024 / 1024;
-
+    
 		m_writer->Close();
 		delete m_writer;
 		m_writer = NULL;
@@ -691,12 +708,12 @@ void DVgrab::stopCapture()
 			           timeCode.hour, timeCode.min, timeCode.sec, timeCode.frame,
 			           recDate.tm_year + 1900, recDate.tm_mon + 1, recDate.tm_mday,
 			           recDate.tm_hour, recDate.tm_min, recDate.tm_sec
-			         );
+                 );
 		}
 		else
 			sendEvent( "\"%s\" %8.2f MiB %d frames", filename.c_str(), size, frames );
 		sendEvent( "Capture Stopped" );
-
+    
 		if ( m_dropped_frames > 0 )
 			sendEvent( "Warning: %d dropped frames.", m_dropped_frames );
 		if ( m_bad_frames > 0 )
@@ -712,9 +729,9 @@ void DVgrab::stopCapture()
 void DVgrab::testCapture( void )
 {
 	pthread_attr_t thread_attributes;
-
+  
 	sendEvent( "Bus Reset, launching watchdog thread" );
-
+  
 	pthread_attr_init( &thread_attributes );
 	pthread_attr_setdetachstate( &thread_attributes, PTHREAD_CREATE_DETACHED );
 	pthread_create( &watchdog_thread, NULL, watchdogThreadProxy, this );
@@ -747,12 +764,12 @@ void DVgrab::watchdogThread()
 				cleanup();
 				sendEvent( "Error: unable to reestablish connection after bus reset" );
 				throw;
-
+        
 				// TODO: the following attempt to recreate reader and restart capture
 				// does not work
 #if 0
 				bool restartCapture = m_captureActive;
-
+        
 				if ( m_captureActive )
 					stopCapture();
 				m_reader_active = false;
@@ -765,7 +782,7 @@ void DVgrab::watchdogThread()
 				}		
 				sendEvent( "Closed existing reader" );
 				m_reader = new iec61883Reader( m_port, m_channel, m_buffers, 
-					this->testCaptureProxy, this, m_hdv );
+                                       this->testCaptureProxy, this, m_hdv );
 				if ( m_reader )
 				{
 					sendEvent( "new reader created" );
@@ -797,29 +814,29 @@ void *DVgrab::captureThread( void *arg )
 void DVgrab::sendCaptureStatus( const char *name, float size, int frames, TimeCode *tc, struct tm *rd, bool newline )
 {
 	char tc_str[64], rd_str[128];
-
+  
 	if ( tc )
 		sprintf( tc_str, "%2.2d:%2.2d:%2.2d.%2.2d", 
-			tc->hour, tc->min, tc->sec, tc->frame );
+             tc->hour, tc->min, tc->sec, tc->frame );
 	else
 		sprintf( tc_str, "??:??:??.??" );
-
+  
 	if ( rd )
 		sprintf( rd_str, "%4.4d.%2.2d.%2.2d %2.2d:%2.2d:%2.2d",
-			rd->tm_year + 1900, rd->tm_mon + 1, rd->tm_mday,
-			rd->tm_hour, rd->tm_min, rd->tm_sec );
+             rd->tm_year + 1900, rd->tm_mon + 1, rd->tm_mday,
+             rd->tm_hour, rd->tm_min, rd->tm_sec );
 	else
 		sprintf( rd_str, "????.??.?? ??:??:??" );
-
+  
 	sendEventParams( 2, 0, "\"%s\": %8.2f MiB %5d frames timecode %s date %s%s",
-		name, size, frames, tc_str, rd_str, newline ? "\n" : "" );
+                   name, size, frames, tc_str, rd_str, newline ? "\n" : "" );
 }
 
 void DVgrab::writeFrame()
 {
 	// All access to the writer is protected
 	pthread_mutex_lock( &capture_mutex );
-
+  
 	// see if we have exceeded requested duration
 	if ( m_timeDuration && m_timeDuration->isResolved() &&
 	     ( ( float )m_total_frames++ / m_frame->GetFrameRate() * 1000.0 + 0.5 ) >=
@@ -838,7 +855,7 @@ void DVgrab::writeFrame()
 		struct tm rd, *recDate = &rd;
 		TimeCode *lasttc = m_isLastTimeCodeSet ? &m_lastTimeCode : 0;
 		struct tm *lastrd = m_isLastRecDateSet ? &m_lastRecDate : 0;
-
+    
 		if ( !m_frame->GetTimeCode( tc ) )
 			timeCode = 0;
 		if ( !m_frame->GetRecordingDate( rd ) )
@@ -848,7 +865,7 @@ void DVgrab::writeFrame()
 			time( &timesys );
 			localtime_r( &timesys, recDate );
 		}
-
+    
 		if ( m_lockstep && m_lockPending && m_frame_count > 0 && m_frame->CanStartNewStream() )
 		{
 			// If a lock is pending due to dropped frames, close the file
@@ -864,14 +881,14 @@ void DVgrab::writeFrame()
 				SMIL::MediaClippingTime mcTime( m_frame->GetFrameRate() );
 				std::ostringstream sb;
 				sb << setfill( '0' ) << std::setw( 2 ) 
-				<< timeCode->hour << ':' << timeCode->min << ':'
-				<< timeCode->sec << ':' << timeCode->frame;
+            << timeCode->hour << ':' << timeCode->min << ':'
+            << timeCode->sec << ':' << timeCode->frame;
 				DVFrame *dvframe = static_cast<DVFrame*>( m_frame );
 				if ( dvframe->IsPAL() )
 					mcTime.parseSmpteValue( sb.str() );
 				else
 					mcTime.parseSmpteNtscDropValue( sb.str() );
-					
+        
 				// If lock step point (multiple of frame count) is reached, skip writing
 				if ( mcTime.getFrames() % m_frame_count != 0 )
 				{
@@ -881,16 +898,26 @@ void DVgrab::writeFrame()
 			}
 			m_lockPending = false;
 		}
-
+    
 		if ( ! m_writer->WriteFrame( m_frame ) )
 		{
 			pthread_mutex_unlock( &capture_mutex );
 			stopCapture();
 			throw std::string( "writing failed" );
 		}
-
+    
+    string output_file = m_writer->GetFileName();
+    last_frame = cv::imread(output_file);
+    
+    if( !m_send_tcp_packet_frame ) 
+    { // either display or send over the network
+      cout << "wrote to file: " << output_file << endl;
+      cv::imshow("last_frame",last_frame);
+      cv::waitKey(5);
+    } 
+    
 		m_isNewFile |= m_writer->IsNewFile();
-
+    
 		if ( m_writer->IsNewFile() && !m_writer->IsFirstFile() )
 		{
 			sendCaptureStatus( fileName.c_str(), size, framesWritten, lasttc, lastrd, true );
@@ -904,10 +931,10 @@ void DVgrab::writeFrame()
 		else if ( m_showstatus )
 		{
 			sendCaptureStatus( m_writer->GetFileName().c_str(),
-				(float) m_writer->GetFileSize() / 1024 / 1024,
-				m_writer->GetFramesWritten(), timeCode, recDate, false );
+                         (float) m_writer->GetFileSize() / 1024 / 1024,
+                         m_writer->GetFramesWritten(), timeCode, recDate, false );
 		}
-
+    
 		if ( timeCode )
 		{
 			memcpy( &m_lastTimeCode, timeCode, sizeof( m_lastTimeCode ) );
@@ -938,23 +965,23 @@ void DVgrab::sendFrameDroppedStatus( const char *reason, const char *meaning )
 	TimeCode timeCode;
 	struct tm recDate;
 	char tc[32], rd[32];
-
+  
 	if ( m_frame && m_frame->GetTimeCode( timeCode ) )
 		sprintf( tc, "%2.2d:%2.2d:%2.2d.%2.2d",
-			timeCode.hour, timeCode.min, timeCode.sec, timeCode.frame );
+             timeCode.hour, timeCode.min, timeCode.sec, timeCode.frame );
 	else
 		sprintf( tc, "??:??:??.??" );
-
+  
 	if ( m_frame && m_frame->GetRecordingDate( recDate ) )
 		sprintf( rd, "%4.4d.%2.2d.%2.2d %2.2d:%2.2d:%2.2d",
-			recDate.tm_year + 1900, recDate.tm_mon + 1, recDate.tm_mday,
-			recDate.tm_hour, recDate.tm_min, recDate.tm_sec );
+             recDate.tm_year + 1900, recDate.tm_mon + 1, recDate.tm_mday,
+             recDate.tm_hour, recDate.tm_min, recDate.tm_sec );
 	else
 		sprintf( rd, "????.??.?? ??:??:??" );
-
+  
 	sendEvent( "\n\a\"%s\": %s: timecode %s date %s",
-		m_writer ? m_writer->GetFileName().c_str() : "", reason, tc, rd );
-
+             m_writer ? m_writer->GetFileName().c_str() : "", reason, tc, rd );
+  
 	sendEvent( meaning );
 }
 
@@ -962,39 +989,61 @@ void DVgrab::captureThreadRun()
 {
 	m_lockPending = true;
 	m_reader_active = true;
-
+  
+  boost::shared_ptr<tcp::socket> s;
+  if( m_send_tcp_packet_frame ) 
+  {
+    boost::asio::io_service io_service;
+    tcp::resolver resolver(io_service);
+    cout << "attempting to connect to "
+        << "host: " << m_tcp_host << " on port " << m_tcp_host << endl;
+    tcp::resolver::query query(tcp::v4(), m_tcp_host, m_tcp_port);
+    tcp::resolver::iterator iterator = resolver.resolve(query);
+    s = boost::shared_ptr<tcp::socket>( new tcp::socket(io_service) );
+    s->connect(*iterator);
+  }
+  unsigned int header_sz = 14;
+  unsigned int output_sz = 4;
+  unsigned int n_pixels  = 640*480*3;
+  unsigned int n_chars   = n_pixels + header_sz;
+  unsigned int nB        = sizeof(unsigned char);
+  vector<unsigned char> raw_data(n_chars);
+  int max_length = 1024;
+  
+  
+  
 	// Loop until we're informed otherwise
 	while ( m_reader_active )
 	{
 		pthread_testcancel();
 		// Wait for the reader to indicate that something has happened
 		m_reader->WaitForAction( );
-
+    
 		int dropped = m_reader->GetDroppedFrames();
 		int badFrames = m_reader->GetBadFrames();
-
+    
 		// Get the next frame
 		if ( ( m_frame = m_reader->GetFrame() ) == NULL )
 			// reader has erred or signaling a stop condition (end of pipe)
 			break;
-
+    
 		// Check if the out queue is falling behind
 		bool critical_mass = m_reader->GetOutQueueSize( ) > m_reader->GetInQueueSize( );
-
+    
 		// Handle exceptional situations
 		if ( dropped > 0 )
 		{
 			m_dropped_frames += dropped;
 			sendFrameDroppedStatus( "buffer underrun near",
-				"This error means that the frames could not be written fast enough." );
+                              "This error means that the frames could not be written fast enough." );
 			
 			if ( m_lockstep && m_frame_count > 0 )
 			{
 				if ( m_writer->FileIsOpen() )
 				{
 					if ( ( m_lockstep_maxdrops > -1 && dropped > m_lockstep_maxdrops )
-					||( m_lockstep_totaldrops > -1 && m_dropped_frames > m_lockstep_totaldrops ) )
-					{
+            ||( m_lockstep_totaldrops > -1 && m_dropped_frames > m_lockstep_totaldrops ) )
+            {
 						sendEvent( "Warning: closing file early due to too many dropped frames." );
 						m_lockPending = true;
 					}
@@ -1011,15 +1060,15 @@ void DVgrab::captureThreadRun()
 		{
 			m_bad_frames += badFrames;
 			sendFrameDroppedStatus( "damaged frame near",
-				"This means that there were missing or invalid FireWire packets." );
+                              "This means that there were missing or invalid FireWire packets." );
 		}
-
+    
 		if ( ! m_frame->IsComplete() )
 		{
 			m_dropped_frames++;
 			sendFrameDroppedStatus( "frame dropped",
-				"This error means that the ieee1394 driver received an incomplete frame." );
-
+                              "This error means that the ieee1394 driver received an incomplete frame." );
+      
 			if ( m_lockstep && m_frame_count > 0 )
 			{
 				if ( m_writer->FileIsOpen() )
@@ -1055,20 +1104,20 @@ void DVgrab::captureThreadRun()
 				       ( m_isRecordMode &&
 				         strcmp( avc1394_vcr_decode_status( m_transportStatus ), "Recording" ) == 0 &&
 				         !( timeCode.hour == 0 && timeCode.min == 0  && timeCode.sec == 0 && timeCode.frame == 0 )
-				       )
-				     )
-				   )
+                 )
+               )
+          )
 					writeFrame();
 			}
-
+      
 			// drop frame on stdout if getting low on buffers
 			if ( !critical_mass && m_raw_pipe )
 			{
 				fd_set wfds;
 				struct timeval tv =
-					{
-						0, 20000
-					};
+        {
+          0, 20000
+            };
 				FD_ZERO( &wfds );
 				FD_SET( fileno( stdout ), &wfds );
 				if ( select( fileno( stdout ) + 1, NULL, &wfds, NULL, &tv ) )
@@ -1077,7 +1126,38 @@ void DVgrab::captureThreadRun()
 				}
 			}
 		}
-		m_reader->DoneWithFrame( m_frame );
+    
+    if( m_send_tcp_packet_frame ) {
+      try {
+        string header = "0123456789ABCD";
+        memcpy((void*)&(raw_data[0]),(void*) header.c_str(),     header_sz * nB );
+        memcpy((void*)&(raw_data[header_sz]),(void*)(last_frame.ptr<unsigned char>(0)), n_pixels * nB );
+        
+        // write to the server, process the frameBuffer
+        boost::asio::write(*s, boost::asio::buffer( &(raw_data[0]), raw_data.size() ) );
+        
+        bool get_server_return = false;
+        if( get_server_return ) 
+        {
+          char reply[max_length];
+          size_t reply_length = boost::asio::read(*s,boost::asio::buffer(reply, output_sz*nB));
+          if( reply_length == 4 ) {
+            std::cout << "Reply is: ";
+            short xy[2];
+            memcpy( &(xy[0]),&(reply[0]),sizeof(short) );
+            memcpy( &(xy[1]),&(reply[2]),sizeof(short) );
+            std::cout << "x,y = " << xy[0] << "," << xy[1] << endl;
+          } else {
+            cout << "warning, bogus reply_length..." << endl;
+          }
+        }
+        
+      } catch (std::exception& e) { // something crazy during network transfer
+        std::cerr << "Exception: " << e.what() << "\n";
+        exit(0);
+      }
+    }
+    m_reader->DoneWithFrame( m_frame );
 	}
 	m_reader_active = false;
 }
@@ -1092,10 +1172,10 @@ void DVgrab::status( )
 	std::string timecode( "--:--:--:--" );
 	std::string filename( "" );
 	std::string duration( "" );
-
+  
 	if ( ! m_avc )
 		return ;
-
+  
 	status = m_avc->TransportStatus( m_node );
 	if ( ( int ) status >= 0 )
 		transportStatus = avc1394_vcr_decode_status( status );
@@ -1109,15 +1189,15 @@ void DVgrab::status( )
 			sendEvent( "Winding Stopped" );
 	}
 	m_transportStatus = prevStatus = status;
-
+  
 	if ( m_avc->Timecode( m_node, s ) )
 		timecode = s;
-
+  
 	if ( m_writer != NULL )
 		filename = m_writer->GetFileName();
 	else
 		filename = "";
-
+  
 	if ( m_frame != NULL && m_writer != NULL )
 	{
 		sprintf( s, "%8.2f", ( float ) m_writer->GetFramesWritten() / m_frame->GetFrameRate() );
@@ -1125,7 +1205,7 @@ void DVgrab::status( )
 	}
 	else
 		duration = "";
-
+  
 	fprintf( stderr, "%-80.80s\r", " " );
 	fprintf( stderr, "\"%s\" %s \"%s\" %8s sec\r", transportStatus.c_str(),
 	         timecode.c_str(),
@@ -1286,7 +1366,7 @@ bool DVgrab::isPlaying()
 	quadlet_t resp2 = AVC1394_MASK_RESPONSE_OPERAND( m_transportStatus, 2 );
 	quadlet_t resp3 = AVC1394_MASK_RESPONSE_OPERAND( m_transportStatus, 3 );
 	return ( ( resp2 == AVC1394_VCR_RESPONSE_TRANSPORT_STATE_PLAY && resp3 != AVC1394_VCR_OPERAND_PLAY_FORWARD_PAUSE ) ||
-		( resp2 == AVC1394_VCR_RESPONSE_TRANSPORT_STATE_RECORD && resp3 != AVC1394_VCR_OPERAND_RECORD_PAUSE ) );
+           ( resp2 == AVC1394_VCR_RESPONSE_TRANSPORT_STATE_RECORD && resp3 != AVC1394_VCR_OPERAND_RECORD_PAUSE ) );
 }
 
 bool DVgrab::done()
@@ -1299,7 +1379,7 @@ bool DVgrab::done()
 			m_transportStatus = m_avc->TransportStatus( m_node );
 			if ( AVC1394_MASK_RESPONSE_OPERAND( m_transportStatus, 3 ) == AVC1394_VCR_OPERAND_WIND_STOP
 			     && AVC1394_MASK_OPCODE( m_transportStatus ) == AVC1394_VCR_RESPONSE_TRANSPORT_STATE_WIND )
-			return true;
+        return true;
 		}
 		
 		timespec t = {0, 125000000L};

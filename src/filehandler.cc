@@ -55,6 +55,10 @@ using std::ends;
 #include "affine.h"
 #include "stringutils.h"
 
+#include "opencv2/core/core.hpp"
+#include "opencv2/highgui/highgui.hpp"
+#include "opencv2/imgproc/imgproc.hpp"
+
 FileTracker *FileTracker::instance = NULL;
 
 FileTracker::FileTracker( ) : mode( CAPTURE_MOVIE_APPEND )
@@ -554,7 +558,15 @@ bool RawHandler::Create( const string& filename )
 
 int RawHandler::Write( Frame *frame )
 {
-	int result = writen( fd, frame->data, frame->GetDataLen() );
+  int num_bytes = frame->GetDataLen();
+  int frame_h   = frame->GetHeight();
+  int frame_w   = frame->GetWidth();
+  
+  cout << "size of ssize_t: " << sizeof(ssize_t) << endl;
+  cout << "num_bytes in raw frame = " << num_bytes 
+       << ", Width = " << frame_w << ", Height = " 
+       << frame_h << endl;
+	int result    = writen( fd, frame->data, num_bytes );
 	return result;
 }
 
@@ -1077,6 +1089,7 @@ JPEGHandler::JPEGHandler( int quality, bool deinterlace, int width, int height,
 	new_width = CLAMP( width, -1, 2048 );
 	this->temp=temp;
 	this->usetemp=usetemp;
+  this->save_tmp_code=0;
 }
 
 
@@ -1251,11 +1264,26 @@ int JPEGHandler::Write( Frame *frame )
 			<< GetExtension() << ends;
 		file = sb.str();
 	}
+  
+//  cv::Mat  frame_copy = cv::Mat::zeros(new_height,new_width,CV_8UC3);
+//  memcpy( frame_copy.ptr<unsigned char>(0),&(image_buffer[0]), new_width * new_height * 3 );
+//  cv::cvtColor(frame_copy.clone(),frame_copy,CV_BGR2RGB);
+//  cv::imshow( "copy of image_buffer",frame_copy);
+//  cv::waitKey(5);
 
 	FILE *outfile;
-
+  
+  std::stringstream ss;
+  ss << temp << "_" << save_tmp_code << ".jpg";
+  string temp_k = ss.str();
+  save_tmp_code++;
+  if( 8 == save_tmp_code ) 
+  { // rotate the "temporary file" so that the read/write doesn't get jammed
+    save_tmp_code = 0; 
+  }
+  
 	if ( this->usetemp ) {
-		outfile = fopen( const_cast<char*>( this->temp.c_str() ), "wb" );
+    outfile = fopen( const_cast<char*>( temp_k.c_str() ), "wb" );
 	} else {
 		outfile = fopen( const_cast<char*>( file.c_str() ), "wb" );
 	}
@@ -1272,9 +1300,12 @@ int JPEGHandler::Write( Frame *frame )
 	}
 	jpeg_finish_compress( &cinfo );
 	fclose( outfile );
-	if ( this->usetemp ) {
-		rename(const_cast<char*>( this->temp.c_str() ), const_cast<char*>( file.c_str() ));
-	}
+  if(usetemp) {
+    file = temp_k;
+  }
+  
+  cout << "wrote to: " << file << endl;
+  
 	return 0;
 }
 
