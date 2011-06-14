@@ -249,7 +249,8 @@ private:
 	bool scale( Frame *frame );
 
 public:
-	JPEGHandler( int quality, bool deinterlace = false, int width = -1, int height = -1, bool overwrite = false, string temp = "tmp.jpg", bool usetemp = false );
+	JPEGHandler( int quality, bool deinterlace = false, int width = -1, int height = -1, 
+               bool overwrite = false, string temp = "tmp.jpg", bool usetemp = false );
 	~JPEGHandler();
   
 	bool FileIsOpen()
